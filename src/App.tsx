@@ -453,7 +453,14 @@ function App() {
         <section id="hero">
           <div className="stick">
             <nav aria-label="Main navigation">
-              <a className="logo sf" href="#hero" onClick={closeMenu}>RenderVision</a>
+              <a className="logo sf" href="#hero" onClick={closeMenu} aria-label="RenderVision">
+                <span className="bars" aria-hidden="true">{Array.from({ length: 7 }, (_, index) => <i key={index} />)}</span>
+                <span className="t" aria-hidden="true">
+                  {[...'RenderVision'].map((letter, index) => (
+                    <span className="lc" key={`${letter}-${index}`} style={{ '--i': index } as React.CSSProperties}>{letter}</span>
+                  ))}
+                </span>
+              </a>
               <button className="menu-toggle" type="button" aria-expanded={menuOpen} aria-controls="primary-links" onClick={() => setMenuOpen((open) => !open)}>
                 {menuOpen ? 'Close' : 'Menu'}
               </button>
