@@ -42,6 +42,7 @@ function usePageMotion(
   canvas: React.RefObject<HTMLCanvasElement | null>,
   cursor: React.RefObject<HTMLDivElement | null>,
   desiredFrame: React.MutableRefObject<number>,
+  requestFrame: React.MutableRefObject<(index: number) => void>,
 ) {
   useEffect(() => {
     if (!loaded) return;
@@ -114,6 +115,7 @@ function usePageMotion(
 
       const frameIndex = reducedMotion ? 0 : Math.round(clamp(heroProgress / 0.8) * (FRAME_COUNT - 1));
       desiredFrame.current = frameIndex;
+      if (!images.current[frameIndex]) requestFrame.current(frameIndex);
       if (frameIndex !== currentFrame) {
         drawFrame(canvas.current, images.current[frameIndex]);
         currentFrame = frameIndex;
@@ -341,43 +343,54 @@ function App() {
   const closeButton = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const desiredFrame = useRef(0);
+  const requestFrame = useRef<(index: number) => void>(() => {});
 
   useEffect(() => {
     let active = true;
     const loadedImages: (HTMLImageElement | undefined)[] = new Array(FRAME_COUNT);
+    const loadingImages: (HTMLImageElement | undefined)[] = new Array(FRAME_COUNT);
+    const frameLoads: (Promise<void> | undefined)[] = new Array(FRAME_COUNT);
     images.current = loadedImages;
 
-    const loadFrame = (index: number) => new Promise<void>((resolve) => {
+    const loadFrame = (index: number, prioritize = false) => {
+      if (loadedImages[index]) return Promise.resolve();
+      const existingLoad = frameLoads[index];
+      if (existingLoad) {
+        const loadingImage = loadingImages[index];
+        if (prioritize && loadingImage) loadingImage.fetchPriority = 'high';
+        return existingLoad;
+      }
+
       const image = new Image();
       image.decoding = 'async';
-      image.fetchPriority = index === 0 ? 'high' : 'low';
-      image.onload = () => {
-        if (!active) {
+      image.fetchPriority = index === 0 || prioritize ? 'high' : 'low';
+      loadingImages[index] = image;
+      const frameLoad = new Promise<void>((resolve) => {
+        image.onload = () => {
+          if (active) {
+            loadedImages[index] = image;
+            if (index === desiredFrame.current) drawFrame(heroCanvas.current, image);
+            if (index === 0) {
+              setLoaded(true);
+              document.body.classList.add('go');
+            }
+          }
           resolve();
-          return;
-        }
-        loadedImages[index] = image;
-        if (index === desiredFrame.current) drawFrame(heroCanvas.current, image);
-        if (index === 0) {
-          setLoaded(true);
-          document.body.classList.add('go');
-        }
-        resolve();
-      };
-      image.onerror = () => {
-        if (!active) {
+        };
+        image.onerror = () => {
+          if (active && index === 0) {
+            setHeroFrameFailed(true);
+            setLoaded(true);
+            document.body.classList.add('go');
+          }
           resolve();
-          return;
-        }
-        if (index === 0) {
-          setHeroFrameFailed(true);
-          setLoaded(true);
-          document.body.classList.add('go');
-        }
-        resolve();
-      };
-      image.src = frames[index];
-    });
+        };
+        image.src = frames[index];
+      });
+      frameLoads[index] = frameLoad;
+      return frameLoad;
+    };
+    requestFrame.current = (index) => { void loadFrame(index, true); };
 
     const preloadFrames = async () => {
       await loadFrame(0);
@@ -397,11 +410,12 @@ function App() {
     void preloadFrames();
     return () => {
       active = false;
+      requestFrame.current = () => {};
       document.body.classList.remove('go');
     };
   }, []);
 
-  usePageMotion(loaded, images, heroCanvas, cursor, desiredFrame);
+  usePageMotion(loaded, images, heroCanvas, cursor, desiredFrame, requestFrame);
 
   useEffect(() => {
     if (!showcaseOpen) return;
