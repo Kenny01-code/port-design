@@ -41,6 +41,7 @@ function usePageMotion(
   images: React.MutableRefObject<(HTMLImageElement | undefined)[]>,
   canvas: React.RefObject<HTMLCanvasElement | null>,
   cursor: React.RefObject<HTMLDivElement | null>,
+  desiredFrame: React.MutableRefObject<number>,
 ) {
   useEffect(() => {
     if (!loaded) return;
@@ -49,8 +50,9 @@ function usePageMotion(
     const lenis = reducedMotion
       ? null
       : new Lenis({
-          duration: 1.15,
+          duration: 1,
           smoothWheel: true,
+          wheelMultiplier: 0.9,
           syncTouch: false,
           anchors: true,
         });
@@ -111,6 +113,7 @@ function usePageMotion(
       }
 
       const frameIndex = reducedMotion ? 0 : Math.round(clamp(heroProgress / 0.8) * (FRAME_COUNT - 1));
+      desiredFrame.current = frameIndex;
       if (frameIndex !== currentFrame) {
         drawFrame(canvas.current, images.current[frameIndex]);
         currentFrame = frameIndex;
@@ -318,7 +321,7 @@ function usePageMotion(
       lenis?.destroy();
       if (activeLenis === lenis) activeLenis = null;
     };
-  }, [loaded, images, canvas, cursor]);
+  }, [loaded, images, canvas, cursor, desiredFrame]);
 }
 
 function ServiceVisual({ type }: { type: string }) {
@@ -328,8 +331,7 @@ function ServiceVisual({ type }: { type: string }) {
 
 function App() {
   const [loaded, setLoaded] = useState(false);
-  const [loadProgress, setLoadProgress] = useState(0);
-  const [loadErrors, setLoadErrors] = useState(0);
+  const [heroFrameFailed, setHeroFrameFailed] = useState(false);
   const [showcaseOpen, setShowcaseOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const images = useRef<(HTMLImageElement | undefined)[]>([]);
@@ -338,48 +340,68 @@ function App() {
   const cursor = useRef<HTMLDivElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
+  const desiredFrame = useRef(0);
 
   useEffect(() => {
-    let completed = 0;
-    let failures = 0;
+    let active = true;
     const loadedImages: (HTMLImageElement | undefined)[] = new Array(FRAME_COUNT);
     images.current = loadedImages;
-    frames.forEach((source, index) => {
+
+    const loadFrame = (index: number) => new Promise<void>((resolve) => {
       const image = new Image();
+      image.decoding = 'async';
+      image.fetchPriority = index === 0 ? 'high' : 'low';
       image.onload = () => {
+        if (!active) {
+          resolve();
+          return;
+        }
         loadedImages[index] = image;
-        completed += 1;
-        setLoadProgress(Math.round((completed / FRAME_COUNT) * 100));
-        if (completed === FRAME_COUNT) {
-          setLoadErrors(failures);
+        if (index === desiredFrame.current) drawFrame(heroCanvas.current, image);
+        if (index === 0) {
           setLoaded(true);
           document.body.classList.add('go');
         }
+        resolve();
       };
       image.onerror = () => {
-        failures += 1;
-        completed += 1;
-        setLoadProgress(Math.round((completed / FRAME_COUNT) * 100));
-        if (completed === FRAME_COUNT) {
-          setLoadErrors(failures);
+        if (!active) {
+          resolve();
+          return;
+        }
+        if (index === 0) {
+          setHeroFrameFailed(true);
           setLoaded(true);
           document.body.classList.add('go');
         }
+        resolve();
       };
-      image.src = source;
+      image.src = frames[index];
     });
-    return () => {
-      document.body.classList.remove('go');
-      loadedImages.forEach((image) => {
-        if (image) {
-          image.onload = null;
-          image.onerror = null;
+
+    const preloadFrames = async () => {
+      await loadFrame(0);
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        return;
+      }
+      const queue = Array.from({ length: FRAME_COUNT - 1 }, (_, index) => index + 1);
+      const workers = Array.from({ length: 4 }, async () => {
+        while (active && queue.length) {
+          const index = queue.shift();
+          if (index !== undefined) await loadFrame(index);
         }
       });
+      await Promise.all(workers);
+    };
+
+    void preloadFrames();
+    return () => {
+      active = false;
+      document.body.classList.remove('go');
     };
   }, []);
 
-  usePageMotion(loaded, images, heroCanvas, cursor);
+  usePageMotion(loaded, images, heroCanvas, cursor, desiredFrame);
 
   useEffect(() => {
     if (!showcaseOpen) return;
@@ -443,11 +465,6 @@ function App() {
     <>
       <div className="cursor" id="cur" ref={cursor} aria-hidden="true">View</div>
       <div id="pg" aria-hidden="true" />
-      <div className={`loader${loaded ? ' done' : ''}`} role="status" aria-live="polite">
-        <span>RenderVision / {loaded && loadErrors ? 'Some visuals unavailable' : 'Loading'}</span>
-        <b>{loadProgress}</b>
-        <i style={{ width: `${loadProgress}%` }} />
-      </div>
 
       <main>
         <section id="hero">
@@ -467,7 +484,7 @@ function App() {
               <ul id="primary-links" className={menuOpen ? 'open' : ''}>
                 <li><a href="#svc" onClick={closeMenu}>Services</a></li>
                 <li><a href="#work" onClick={closeMenu}>Portfolio</a></li>
-                <li><a href="#mw" onClick={closeMenu}>About</a></li>
+                <li><a href="#about" onClick={closeMenu}>About</a></li>
                 <li><a href="#cta" onClick={closeMenu}>Plan</a></li>
               </ul>
               <a className="pill" href="#cta" data-mag>Get in touch</a>
@@ -508,6 +525,7 @@ function App() {
             <div className="orb co" data-d="14" style={{ '--s': 'auto', '--l': '14vw', '--t': '46vh' } as React.CSSProperties}><span><b className="sf">01</b> Depth</span><i /><s /></div>
             <div className="orb co r" data-d="18" style={{ '--s': 'auto', '--l': '63.5vw', '--t': '43vh' } as React.CSSProperties}><span><b className="sf">02</b> Motion</span><i /><s /></div>
             <div className="subj" id="subj"><canvas ref={heroCanvas} width="560" height="522" aria-label="Animated 3D design showcase" /></div>
+            {heroFrameFailed && <p className="visual-error" role="status">The hero visual could not load. Please refresh to try again.</p>}
             <a className="badge" href="#work" onClick={openShowcase} aria-label="Open animated showcase">
               <svg viewBox="0 0 200 200" aria-hidden="true"><defs><path id="circle-text" d="M100 100m-78 0a78 78 0 1 1 156 0a78 78 0 1 1-156 0" /></defs><text><textPath href="#circle-text">WATCH OUR SHOWCASE * WATCH OUR SHOWCASE * </textPath></text></svg>
               <div className="blob">↗</div>
@@ -535,6 +553,30 @@ function App() {
         <section id="mw" aria-label="Our approach">
           <div className="mrow" id="r1">DEPTH * MOTION * SCROLL * DETAIL * DEPTH * MOTION * SCROLL * DETAIL * DEPTH * MOTION * SCROLL * DETAIL *</div>
           <div className="mrow o" id="r2">Visual masterpieces * built to be felt * Visual masterpieces * built to be felt * Visual masterpieces * built to be felt *</div>
+        </section>
+
+        <section id="about">
+          <div className="about-label">ABOUT RENDERVISION <span>—</span> 01</div>
+          <div className="about-copy">
+            <p className="eyebrow">Creative direction • 3D design • immersive web experiences</p>
+            <h2 className="sf">We turn ambitious ideas into digital worlds people remember.</h2>
+            <p>RenderVision blends strategy, motion, and visual storytelling to help brands launch with clarity and presence. From concept to final execution, we shape experiences that feel cinematic, intentional, and distinctly premium.</p>
+            <div className="about-grid">
+              <div>
+                <strong>Strategy</strong>
+                <span>Brand narratives, positioning, and visual systems built to scale.</span>
+              </div>
+              <div>
+                <strong>Design</strong>
+                <span>High-end 3D art direction, product storytelling, and motion-led layouts.</span>
+              </div>
+              <div>
+                <strong>Experience</strong>
+                <span>Immersive interfaces designed to feel tactile, elegant, and unforgettable.</span>
+              </div>
+            </div>
+            <a href="#work" data-v>Explore selected work ↗</a>
+          </div>
         </section>
 
         <section id="svc">
@@ -572,7 +614,6 @@ function App() {
         <canvas id="mc" ref={showcaseCanvas} width="560" height="522" aria-label="Looping showcase animation" />
         <button id="mx" ref={closeButton} type="button" tabIndex={showcaseOpen ? 0 : -1} onClick={() => setShowcaseOpen(false)}>Close</button>
       </div>
-      {!loaded && <span className="sr-only" aria-live="polite">Loading design assets: {loadProgress}%</span>}
     </>
   );
 }
